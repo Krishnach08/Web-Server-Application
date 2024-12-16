@@ -1,0 +1,90 @@
+# Name of the workflow
+# This workflow automates the Terraform infrastructure deployment, Docker image build process, and ECS deployment.
+name: Terraform CI/CD Pipeline
+
+# Event triggers
+# The workflow is triggered on:
+# 1. Push events to the 'main' branch.
+# 2. Pull requests targeting the 'main' branch.
+on:
+  push:
+    branches:
+      - main  # Trigger on push to the main branch
+  pull_request:
+    branches:
+      - main  # Trigger on pull requests to the main branch
+
+# Define the jobs for the workflow
+jobs:
+  build-and-deploy:
+    # Specify the environment where the job runs
+    # 'ubuntu-latest' is a GitHub-hosted runner with an Ubuntu Linux image.
+    runs-on: ubuntu-latest
+
+    steps:
+      # Step 1: Checkout the repository
+      # This step checks out the code from the repository so it can be accessed during the workflow.
+      - name: Checkout Code
+        uses: actions/checkout@v3  # GitHub Action to check out repository code
+
+      # Step 2: Set up Terraform
+      # Installs Terraform CLI for use in subsequent steps.
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v2  # GitHub Action to set up Terraform
+        with:
+          terraform_version: 1.10.0  # Specify the Terraform version to use
+
+      # Step 3: Initialize Terraform
+      # Initializes the Terraform working directory and downloads necessary provider plugins.
+      - name: Terraform Init
+        working-directory: ./terraform  # Specify the Terraform configuration directory
+        run: terraform init  # Initialize Terraform
+
+      # Step 4: Validate Terraform configuration
+      # Validates the Terraform configuration to ensure it's syntactically correct.
+      - name: Terraform Validate
+        working-directory: ./terraform  # Specify the Terraform configuration directory
+        run: terraform validate  # Validate Terraform code
+
+      # Step 5: Generate Terraform execution plan
+      # Creates a plan for infrastructure changes, saving it to a file named 'tfplan'.
+      - name: Terraform Plan
+        working-directory: ./terraform  # Specify the Terraform configuration directory
+        run: terraform plan -out=tfplan  # Generate an execution plan and save it as 'tfplan'
+
+      # Step 6: Manual Approval
+      # Inserts a manual approval step before applying changes to the infrastructure.
+      - name: Manual Approval
+        uses: hmarr/auto-approve-action@v2  # GitHub Action for manual approval
+        with:
+          approval_mode: true  # Require manual approval
+
+      # Step 7: Apply Terraform execution plan
+      # Applies the changes defined in the 'tfplan' file if the event is a push to the main branch.
+      - name: Terraform Apply
+        if: github.event_name == 'push'  # Only execute on a push event
+        working-directory: ./terraform  # Specify the Terraform configuration directory
+        run: terraform apply tfplan  # Apply the execution plan
+
+      # Step 8: Authenticate to Amazon ECR
+      # Logs in to Amazon ECR to push the Docker image.
+      - name: Authenticate to Amazon ECR
+        run: aws ecr get-login-password --region ${{ secrets.AWS_REGION }} | docker login --username AWS --password-stdin ${{ secrets.AWS_ACCOUNT_ID }}.dkr.ecr.${{ secrets.AWS_REGION }}.amazonaws.com
+
+      # Step 9: Build and Push Docker Image
+      # Builds the Docker image and pushes it to Amazon ECR.
+      - name: Build and Push Docker Image
+        working-directory: ./docker  # Specify the Docker configuration directory
+        run: |
+          docker build -t ${{ secrets.AWS_ACCOUNT_ID }}.dkr.ecr.${{ secrets.AWS_REGION }}.amazonaws.com/webapp:latest .
+          docker push ${{ secrets.AWS_ACCOUNT_ID }}.dkr.ecr.${{ secrets.AWS_REGION }}.amazonaws.com/webapp:latest
+
+      # Step 10: Update ECS Service
+      # Deploys the updated Docker image to the ECS cluster.
+      - name: Deploy to ECS Cluster
+        run: |
+          aws ecs update-service \
+            --cluster ${{ secrets.ECS_CLUSTER_NAME }} \
+            --service ${{ secrets.ECS_SERVICE_NAME }} \
+            --force-new-deployment \
+            --region ${{ secrets.AWS_REGION }}
